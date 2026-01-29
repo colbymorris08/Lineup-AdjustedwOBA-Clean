@@ -13,7 +13,7 @@ try:
     st.info("Loading and building full dataset...")
 
     # Import your full pipeline function
-    from data_processing import build_full_dataset  # adjust this path if needed
+    from data_processor import build_full_dataset  # adjust this path if needed
     df = build_full_dataset()
 
     st.success("✅ Full dataset loaded successfully!")
