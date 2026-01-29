@@ -31,36 +31,24 @@ st.set_page_config(
 def load_data():
     """Load all datasets and build full adjusted dataset."""
     
-    import os
+    from data_processor import LineupProtectionProcessor
+    import glob
     
-    # DEBUG: Show current directory and files
-    st.write("**DEBUG INFO:**")
-    st.write(f"Current directory: {os.getcwd()}")
-    st.write(f"Files in directory: {os.listdir('.')}")
-    
-    csv_parts = sorted(glob.glob("statcast_2024_part*.csv"))
-    st.write(f"Found CSV parts: {csv_parts}")
+    # Only load first 4 parts (half season) to avoid timeout
+    csv_parts = sorted(glob.glob("statcast_2024_part*.csv"))[:4]
     
     if not csv_parts:
-        st.error("❌ No statcast CSV chunks found")
+        st.error("❌ No statcast CSV files found")
         st.stop()
-
-    # ✅ ADD THIS LINE - Actually load the CSV files!
+    
+    st.info(f"Loading {len(csv_parts)} files: {csv_parts}")
+    
+    # Load statcast manually (fewer files)
     statcast_df = pd.concat([pd.read_csv(f, low_memory=False) for f in csv_parts], ignore_index=True)
-    st.write(f"Loaded {len(statcast_df):,} pitches")
-
-    # Required Statcast fields
-    required_cols = ["plate_x", "plate_z"]
-    missing = [c for c in required_cols if c not in statcast_df.columns]
-    if missing:
-        st.error(f"❌ Missing required Statcast columns: {', '.join(missing)}")
-        st.stop()
-
-    from data_processor import LineupProtectionProcessor
-
+    
     processor = LineupProtectionProcessor(".")
-    processor.statcast = statcast_df  # Pass the loaded data
-    processor.load_all_data()
+    processor.statcast = statcast_df  # Pass pre-loaded data
+    processor.load_all_data()  # Loads other small files
 
     df = processor.build_full_dataset()
     return df, processor
