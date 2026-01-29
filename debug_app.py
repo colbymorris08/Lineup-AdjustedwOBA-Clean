@@ -1,69 +1,80 @@
 import streamlit as st
 import pandas as pd
 import plotly.express as px
+import plotly.graph_objects as go
 import traceback
 
+st.set_page_config(page_title="Debug: Lineup-Adjusted wOBA", layout="wide")
+
+st.title("🧪 Debug: Lineup-Adjusted wOBA Leaderboard")
+
+# ========== TRY TO LOAD DATA + RUN VISUALS ==========
 try:
-    # Title and description
-    st.title("Lineup-Adjusted wOBA Leaderboard")
-    st.markdown(
-        "This tool evaluates hitter performance by adjusting for lineup protection, "
-        "removing bias from protection quality, to better assess individual contributions."
-    )
+    st.info("Loading and building full dataset...")
 
-    # Upload CSV file
-    uploaded_file = st.file_uploader("Upload your Lineup-Adjusted wOBA CSV", type=["csv"])
+    # Import your full pipeline function
+    from data_processing import build_full_dataset  # adjust this path if needed
+    df = build_full_dataset()
 
-    if uploaded_file is not None:
-        # Read data
-        df = pd.read_csv(uploaded_file)
+    st.success("✅ Full dataset loaded successfully!")
+    st.write(f"{len(df)} players, {df.shape[1]} columns")
+    st.dataframe(df.head())
 
-        # Clean column names
-        df.columns = df.columns.str.strip()
+    # ========= Visualizations =========
+    st.header("📈 Visualizations")
+    layers = ['Protection', 'Park', 'Pitcher', 'Location']
 
-        # Sidebar filters
-        st.sidebar.header("Filter Options")
-        team_filter = st.sidebar.multiselect("Select team(s):", df["Team"].unique(), default=df["Team"].unique())
-        min_pa = st.sidebar.slider("Minimum Plate Appearances:", min_value=0, max_value=int(df["PA"].max()), value=50)
+    viz = st.selectbox("Select plot", [
+        "Observed vs Adjusted Scatter",
+        "Protection Score vs wOBA",
+        "Layer Impact Magnitudes",
+        "Team Context Effects"
+    ])
 
-        # Apply filters
-        filtered_df = df[(df["Team"].isin(team_filter)) & (df["PA"] >= min_pa)]
-
-        # Leaderboard Table
-        st.subheader("Leaderboard Table")
-        leaderboard_cols = ["Name", "Team", "PA", "wOBA", "Adj_wOBA", "Adj_wOBA_Diff"]
-        st.dataframe(filtered_df[leaderboard_cols].sort_values("Adj_wOBA", ascending=False), use_container_width=True)
-
-        # Scatter Plot
-        st.subheader("wOBA vs Adjusted wOBA")
+    if viz == "Observed vs Adjusted Scatter":
         fig = px.scatter(
-            filtered_df,
-            x="wOBA",
-            y="Adj_wOBA",
-            color="Team",
-            hover_data=["Name", "PA", "Adj_wOBA_Diff"],
-            title="wOBA vs Adjusted wOBA (Lineup Context Removed)",
+            df, x='wOBA', y='adjusted_wOBA',
+            hover_name='Name', hover_data=['Team', 'total_selected_adj'],
+            color='total_selected_adj', color_continuous_scale='RdYlGn_r',
+            title=f'Observed vs Adjusted ({", ".join(layers)})'
         )
+        fig.add_trace(go.Scatter(x=[.25, .48], y=[.25, .48], mode='lines',
+                                 line=dict(dash='dash', color='gray'), showlegend=False))
+        fig.update_layout(height=600)
         st.plotly_chart(fig, use_container_width=True)
 
-        # Histogram of Differences
-        st.subheader("Distribution of Adjusted wOBA Differences")
-        fig2 = px.histogram(
-            filtered_df,
-            x="Adj_wOBA_Diff",
-            nbins=30,
-            title="How Much Did Adjusted wOBA Differ from Raw wOBA?",
+    elif viz == "Protection Score vs wOBA":
+        fig = px.scatter(
+            df, x='avg_protection_score', y='wOBA',
+            hover_name='Name', trendline='ols',
+            title='Does Protection Correlate with Performance?'
         )
-        st.plotly_chart(fig2, use_container_width=True)
+        fig.update_layout(height=600, xaxis_title='Protection Score', yaxis_title='Observed wOBA')
+        st.plotly_chart(fig, use_container_width=True)
 
-        # Table of biggest risers/fallers
-        st.subheader("Top Risers and Fallers (Adj_wOBA vs wOBA)")
-        sorted_diff = filtered_df.sort_values("Adj_wOBA_Diff", ascending=False)
-        st.markdown("### Biggest Risers")
-        st.dataframe(sorted_diff.head(10)[leaderboard_cols], use_container_width=True)
-        st.markdown("### Biggest Fallers")
-        st.dataframe(sorted_diff.tail(10)[leaderboard_cols], use_container_width=True)
+    elif viz == "Layer Impact Magnitudes":
+        impacts = pd.DataFrame({
+            'Layer': ['Protection', 'Park', 'Pitcher', 'Location'],
+            'Avg |Adj|': [
+                df['protection_adj'].abs().mean(),
+                df['park_adj'].abs().mean(),
+                df['pitcher_adj'].abs().mean(),
+                df['pitch_quality_adj'].abs().mean()
+            ]
+        })
+        fig = px.bar(impacts, x='Layer', y='Avg |Adj|', title='Average Absolute Adjustment by Layer')
+        st.plotly_chart(fig, use_container_width=True)
+
+    elif viz == "Team Context Effects":
+        team = df.groupby('Team').agg({
+            'protection_adj': 'mean',
+            'park_adj': 'mean',
+            'wOBA': 'mean'
+        }).reset_index()
+        fig = px.scatter(team, x='protection_adj', y='park_adj', size='wOBA',
+                         hover_name='Team', title='Team-Level Context')
+        st.plotly_chart(fig, use_container_width=True)
 
 except Exception as e:
-    st.error("An error occurred. See details below.")
+    st.error("🚨 An error occurred while running the app:")
     st.code(traceback.format_exc())
