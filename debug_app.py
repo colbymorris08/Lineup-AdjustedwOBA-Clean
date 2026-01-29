@@ -1,80 +1,184 @@
 import streamlit as st
+import traceback
 import pandas as pd
+import numpy as np
 import plotly.express as px
 import plotly.graph_objects as go
-import traceback
+import glob
+import os
 
-st.set_page_config(page_title="Debug: Lineup-Adjusted wOBA", layout="wide")
+st.set_page_config(
+    page_title="Lineup Protection Projection Tool",
+    page_icon="⚾",
+    layout="wide",
+    initial_sidebar_state="expanded"
+)
 
-st.title("🧪 Debug: Lineup-Adjusted wOBA Leaderboard")
+# =========================
+# DATA LOADING
+# =========================
+@st.cache_data(ttl=3600)
+def load_data():
+    """Load and process Statcast chunks with extensive error handling."""
+    try:
+        csv_files = sorted(glob.glob("statcast_2024_part*.csv"))
+        if not csv_files:
+            raise FileNotFoundError("No files found matching statcast_2024_part*.csv in directory.")
 
-# ========== TRY TO LOAD DATA + RUN VISUALS ==========
-try:
-    st.info("Loading and building full dataset...")
+        dfs = []
+        for f in csv_files:
+            try:
+                dfs.append(pd.read_csv(f, low_memory=False))
+            except Exception as e:
+                raise RuntimeError(f"Failed to load {f}: {str(e)}")
 
-    # Import your full pipeline function
-    from data_processor import build_full_dataset  # adjust this path if needed
-    df = build_full_dataset()
+        statcast = pd.concat(dfs, ignore_index=True)
 
-    st.success("✅ Full dataset loaded successfully!")
-    st.write(f"{len(df)} players, {df.shape[1]} columns")
-    st.dataframe(df.head())
+        required = ["plate_x", "plate_z"]
+        missing = [col for col in required if col not in statcast.columns]
+        if missing:
+            raise KeyError(f"Missing required Statcast columns: {', '.join(missing)}")
 
-    # ========= Visualizations =========
-    st.header("📈 Visualizations")
-    layers = ['Protection', 'Park', 'Pitcher', 'Location']
+        # Import processor
+        try:
+            from data_processor import LineupProtectionProcessor
+        except Exception as e:
+            raise ImportError(f"Error importing LineupProtectionProcessor: {str(e)}")
 
-    viz = st.selectbox("Select plot", [
-        "Observed vs Adjusted Scatter",
-        "Protection Score vs wOBA",
-        "Layer Impact Magnitudes",
-        "Team Context Effects"
-    ])
+        processor = LineupProtectionProcessor(".")
+        processor.statcast = statcast
 
-    if viz == "Observed vs Adjusted Scatter":
-        fig = px.scatter(
-            df, x='wOBA', y='adjusted_wOBA',
-            hover_name='Name', hover_data=['Team', 'total_selected_adj'],
-            color='total_selected_adj', color_continuous_scale='RdYlGn_r',
-            title=f'Observed vs Adjusted ({", ".join(layers)})'
+        try:
+            processor.load_all_data()
+        except Exception as e:
+            raise RuntimeError(f"load_all_data() failed: {str(e)}")
+
+        try:
+            df = processor.build_full_dataset()
+        except Exception as e:
+            raise RuntimeError(f"build_full_dataset() failed: {str(e)}")
+
+        return df, processor
+
+    except Exception as e:
+        st.error("🚨 Failed to load and process data.")
+        st.code(traceback.format_exc())
+        st.stop()
+
+
+# =========================
+# ADJUSTMENT LOGIC
+# =========================
+def calculate_adjusted_woba(df: pd.DataFrame, layers: list) -> pd.DataFrame:
+    df = df.copy()
+    df["adjusted_wOBA"] = df["wOBA"]
+    df["total_selected_adj"] = 0.0
+
+    if "Lineup Protection" in layers:
+        df["adjusted_wOBA"] -= df["protection_adj"].fillna(0)
+        df["total_selected_adj"] += df["protection_adj"].fillna(0)
+
+    if "Park Factors" in layers:
+        df["adjusted_wOBA"] -= df["park_adj"].fillna(0)
+        df["total_selected_adj"] += df["park_adj"].fillna(0)
+
+    if "Pitcher Quality" in layers:
+        df["adjusted_wOBA"] += df["pitcher_adj"].fillna(0)
+        df["total_selected_adj"] -= df["pitcher_adj"].fillna(0)
+
+    if "Pitch Location" in layers:
+        df["adjusted_wOBA"] -= df["pitch_quality_adj"].fillna(0)
+        df["total_selected_adj"] += df["pitch_quality_adj"].fillna(0)
+
+    df["wOBA_diff"] = df["adjusted_wOBA"] - df["wOBA"]
+    return df
+
+
+# =========================
+# MAIN APP
+# =========================
+def main():
+    try:
+        st.title("⚾ Lineup Protection Projection Tool")
+        st.markdown("*Isolating true hitter talent by controlling for context factors*")
+
+        page = st.sidebar.radio(
+            "Select View",
+            ["🏠 Overview", "👤 Player Analysis", "📊 Leaderboards", "🔬 Methodology", "📈 Visualizations"]
         )
-        fig.add_trace(go.Scatter(x=[.25, .48], y=[.25, .48], mode='lines',
-                                 line=dict(dash='dash', color='gray'), showlegend=False))
-        fig.update_layout(height=600)
-        st.plotly_chart(fig, use_container_width=True)
 
-    elif viz == "Protection Score vs wOBA":
-        fig = px.scatter(
-            df, x='avg_protection_score', y='wOBA',
-            hover_name='Name', trendline='ols',
-            title='Does Protection Correlate with Performance?'
-        )
-        fig.update_layout(height=600, xaxis_title='Protection Score', yaxis_title='Observed wOBA')
-        st.plotly_chart(fig, use_container_width=True)
+        st.sidebar.divider()
+        st.sidebar.subheader("🎚️ Adjustment Layers")
 
-    elif viz == "Layer Impact Magnitudes":
-        impacts = pd.DataFrame({
-            'Layer': ['Protection', 'Park', 'Pitcher', 'Location'],
-            'Avg |Adj|': [
-                df['protection_adj'].abs().mean(),
-                df['park_adj'].abs().mean(),
-                df['pitcher_adj'].abs().mean(),
-                df['pitch_quality_adj'].abs().mean()
-            ]
-        })
-        fig = px.bar(impacts, x='Layer', y='Avg |Adj|', title='Average Absolute Adjustment by Layer')
-        st.plotly_chart(fig, use_container_width=True)
+        layers = []
+        if st.sidebar.checkbox("Lineup Protection", value=True): layers.append("Lineup Protection")
+        if st.sidebar.checkbox("Park Factors", value=True): layers.append("Park Factors")
+        if st.sidebar.checkbox("Pitcher Quality", value=True): layers.append("Pitcher Quality")
+        if st.sidebar.checkbox("Pitch Location", value=True): layers.append("Pitch Location")
 
-    elif viz == "Team Context Effects":
-        team = df.groupby('Team').agg({
-            'protection_adj': 'mean',
-            'park_adj': 'mean',
-            'wOBA': 'mean'
-        }).reset_index()
-        fig = px.scatter(team, x='protection_adj', y='park_adj', size='wOBA',
-                         hover_name='Team', title='Team-Level Context')
-        st.plotly_chart(fig, use_container_width=True)
+        with st.spinner("🔄 Loading data and applying adjustments..."):
+            df, processor = load_data()
+            df = calculate_adjusted_woba(df, layers)
 
-except Exception as e:
-    st.error("🚨 An error occurred while running the app:")
-    st.code(traceback.format_exc())
+        if page == "🏠 Overview":
+            show_overview(df, layers)
+        elif page == "👤 Player Analysis":
+            show_player_analysis(df, layers)
+        elif page == "📊 Leaderboards":
+            show_leaderboards(df, layers)
+        elif page == "🔬 Methodology":
+            show_methodology()
+        elif page == "📈 Visualizations":
+            show_visualizations(df, layers)
+
+    except Exception:
+        st.error("🚨 A fatal error occurred.")
+        st.code(traceback.format_exc())
+
+
+# =========================
+# VIEW FUNCTIONS
+# =========================
+def show_overview(df, layers):
+    st.header("🏠 Project Overview")
+    st.write("This tool controls for external biasing factors like lineup protection, parks, and pitch quality.")
+    st.metric("Total Players", len(df))
+
+def show_player_analysis(df, layers):
+    st.header("👤 Player Analysis")
+    player_names = sorted(df["Name"].dropna().unique())
+    selected = st.selectbox("Select Player", player_names)
+    player = df[df["Name"] == selected].iloc[0]
+
+    st.metric("Observed wOBA", f"{player['wOBA']:.3f}")
+    st.metric("Adjusted wOBA", f"{player['adjusted_wOBA']:.3f}", delta=f"{player['wOBA_diff']:+.3f}")
+
+def show_leaderboards(df, layers):
+    st.header("📊 Adjusted wOBA Leaderboard")
+    st.dataframe(
+        df.sort_values("adjusted_wOBA", ascending=False)[
+            ["Name", "Team", "wOBA", "adjusted_wOBA", "total_selected_adj"]
+        ].head(25),
+        use_container_width=True
+    )
+
+def show_methodology():
+    st.header("🔬 Methodology")
+    st.markdown("Explains how lineup protection and other effects are quantified and adjusted.")
+
+def show_visualizations(df, layers):
+    st.header("📈 Observed vs Adjusted wOBA")
+    fig = px.scatter(
+        df,
+        x="wOBA",
+        y="adjusted_wOBA",
+        hover_name="Name",
+        title="Observed vs Adjusted wOBA"
+    )
+    st.plotly_chart(fig, use_container_width=True)
+
+# =========================
+# ENTRY
+# =========================
+if __name__ == "__main__":
+    main()
