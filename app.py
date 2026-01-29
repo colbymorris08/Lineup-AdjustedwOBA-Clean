@@ -45,6 +45,10 @@ def load_data():
         st.error("❌ No statcast CSV chunks found")
         st.stop()
 
+    # ✅ ADD THIS LINE - Actually load the CSV files!
+    statcast_df = pd.concat([pd.read_csv(f, low_memory=False) for f in csv_parts], ignore_index=True)
+    st.write(f"Loaded {len(statcast_df):,} pitches")
+
     # Required Statcast fields
     required_cols = ["plate_x", "plate_z"]
     missing = [c for c in required_cols if c not in statcast_df.columns]
@@ -55,12 +59,11 @@ def load_data():
     from data_processor import LineupProtectionProcessor
 
     processor = LineupProtectionProcessor(".")
-    processor.statcast = statcast_df
+    processor.statcast = statcast_df  # Pass the loaded data
     processor.load_all_data()
 
     df = processor.build_full_dataset()
     return df, processor
-
 # =========================
 # ADJUSTMENT LOGIC
 # =========================
