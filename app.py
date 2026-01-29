@@ -14,6 +14,25 @@ import plotly.graph_objects as go
 import os
 import lzma
 
+def main():
+    try:
+        st.title("Isolating True Hitter Talent by Controlling for Context Factors")
+        # 🔽 Your existing app logic here
+        from data_processor import LineupProtectionProcessor
+
+        processor = LineupProtectionProcessor()
+        processor.load_all_data()  # wherever your issue is happening
+
+        # More processing and Streamlit UI
+        st.success("Data loaded successfully")
+
+    except Exception as e:
+        st.error("An error occurred:")
+        st.exception(e)
+
+if __name__ == "__main__":
+    main()
+
 st.write("✅ App started")
 
 csv_parts = sorted(glob.glob("statcast_2024_part*.csv"))
