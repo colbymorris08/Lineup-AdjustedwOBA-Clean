@@ -30,20 +30,19 @@ st.set_page_config(
 @st.cache_data(ttl=3600)
 def load_data():
     """Load all datasets and build full adjusted dataset."""
-
+    
+    import os
+    
+    # DEBUG: Show current directory and files
+    st.write("**DEBUG INFO:**")
+    st.write(f"Current directory: {os.getcwd()}")
+    st.write(f"Files in directory: {os.listdir('.')}")
+    
     csv_parts = sorted(glob.glob("statcast_2024_part*.csv"))
+    st.write(f"Found CSV parts: {csv_parts}")
+    
     if not csv_parts:
         st.error("❌ No statcast CSV chunks found")
-        st.stop()
-
-    try:
-        statcast_df = pd.concat(
-            (pd.read_csv(f, low_memory=False) for f in csv_parts),
-            ignore_index=True
-        )
-    except Exception as e:
-        st.error("❌ Failed to read Statcast CSV parts")
-        st.code(str(e))
         st.stop()
 
     # Required Statcast fields
