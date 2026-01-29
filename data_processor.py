@@ -23,9 +23,11 @@ class LineupProtectionProcessor:
         """Load all required datasets."""
         print("Loading datasets...")
 
-        import glob
-        statcast_files = sorted(glob.glob(f"{self.data_dir}/statcast_2024_part*.csv"))
-        self.statcast = pd.concat([pd.read_csv(f, low_memory=False) for f in statcast_files], ignore_index=True)
+        # Only load Statcast if not already provided
+        if self.statcast is None:
+            import glob
+            statcast_files = sorted(glob.glob(f"{self.data_dir}/statcast_2024_part*.csv"))
+            self.statcast = pd.concat([pd.read_csv(f, low_memory=False) for f in statcast_files], ignore_index=True)
         print(f"  Statcast: {len(self.statcast):,} pitches")
 
         # FanGraphs batting stats
