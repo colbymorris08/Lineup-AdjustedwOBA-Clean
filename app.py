@@ -14,6 +14,18 @@ import plotly.graph_objects as go
 import os
 import lzma
 
+st.write("✅ App started")
+
+csv_parts = sorted(glob.glob("statcast_2024_part*.csv"))
+st.write(f"📄 Found CSV parts: {csv_parts}")
+
+try:
+    df = pd.concat([pd.read_csv(f) for f in csv_parts])
+    st.write("✅ Data loaded successfully")
+except Exception as e:
+    st.error(f"❌ Failed to load data: {e}")
+    raise
+
 # =========================
 # LOCAL DATA CONFIG
 # =========================
