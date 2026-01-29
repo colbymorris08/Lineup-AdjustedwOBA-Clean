@@ -7,29 +7,6 @@ import pandas as pd
 import numpy as np
 from typing import Dict, Optional
 
-
-
-@st.cache_data(ttl=3600)
-def load_data():
-    """Load all datasets and build full adjusted dataset."""
-    
-    import os
-    
-    # DEBUG: Show current directory and files
-    st.write("**DEBUG INFO:**")
-    st.write(f"Current directory: {os.getcwd()}")
-    st.write(f"Files in directory: {os.listdir('.')}")
-    
-    csv_parts = sorted(glob.glob("statcast_2024_part*.csv"))
-    st.write(f"Found CSV parts: {csv_parts}")
-    
-    if not csv_parts:
-        st.error("❌ No statcast CSV chunks found")
-        st.stop()
-    
-    # ... rest of function
-
-
 class LineupProtectionProcessor:
     """Process and analyze lineup protection effects on batting performance."""
     
