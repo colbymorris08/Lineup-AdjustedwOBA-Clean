@@ -90,6 +90,42 @@ class LineupProtectionProcessor:
         
         return 'waste'
     
+    def calculate_lineup_context(self) -> pd.DataFrame:
+        """Calculate both on-deck (behind) and preceding (in front) hitter protection."""
+        
+        # Get batter wOBA lookup from FanGraphs data
+        batter_woba = self.batting.set_index('MLBAMID')['wOBA'].to_dict()
+        lg_woba = self.batting['wOBA'].mean()
+        
+        # Get PA-level data from statcast
+        pa_data = self.statcast.groupby(
+            ['game_pk', 'inning', 'inning_topbot', 'at_bat_number', 'batter']
+        ).size().reset_index(name='pitches')
+        pa_data = pa_data.sort_values(['game_pk', 'inning_topbot', 'inning', 'at_bat_number'])
+        
+        # For each PA, get the NEXT batter (on-deck / behind)
+        pa_data['ondeck_batter'] = pa_data.groupby(['game_pk', 'inning_topbot'])['batter'].shift(-1)
+        pa_data['ondeck_woba'] = pa_data['ondeck_batter'].map(batter_woba).fillna(lg_woba)
+        
+        # For each PA, get the PREVIOUS batter (in front)
+        pa_data['preceding_batter'] = pa_data.groupby(['game_pk', 'inning_topbot'])['batter'].shift(1)
+        pa_data['preceding_woba'] = pa_data['preceding_batter'].map(batter_woba).fillna(lg_woba)
+        
+        # Aggregate by batter
+        lineup_context = pa_data.groupby('batter').agg({
+            'ondeck_woba': 'mean',
+            'preceding_woba': 'mean',
+            'game_pk': 'nunique',
+            'pitches': 'sum'
+        }).rename(columns={
+            'ondeck_woba': 'avg_ondeck_protection',
+            'preceding_woba': 'avg_preceding_protection',
+            'game_pk': 'games',
+            'pitches': 'total_pitches'
+        })
+        
+        return lineup_context.reset_index()
+    
     def calculate_pitch_quality_by_batter(self) -> pd.DataFrame:
         """Calculate the quality of pitches seen by each batter."""
         df = self.statcast.copy()
@@ -109,19 +145,9 @@ class LineupProtectionProcessor:
             'plate_x': 'count'
         }).rename(columns={
             'pitch_zone': 'heart_pct',
-            'plate_x': 'total_pitches'
+            'plate_x': 'total_pitches_pq'
         })
         
-        # Zone percentages
-        zone_pcts = df.groupby('batter')['pitch_zone'].apply(
-            lambda x: pd.Series({
-                'zone_pct': ((x == 'heart') | (x == 'zone')).mean(),
-                'chase_pct': (x == 'chase').mean(),
-                'waste_pct': (x == 'waste').mean()
-            })
-        ).unstack()
-        
-        batter_pitch_quality = batter_pitch_quality.join(zone_pcts)
         return batter_pitch_quality.reset_index()
     
     def calculate_pitcher_quality_faced(self) -> pd.DataFrame:
@@ -195,17 +221,23 @@ class LineupProtectionProcessor:
         print("  Merging protection scores...")
         df = self.merge_protection_scores()
         
+        print("  Calculating lineup context (on-deck + preceding)...")
+        lineup_context = self.calculate_lineup_context()
+        df = df.merge(lineup_context, left_on='MLBAMID', right_on='batter', how='left')
+        
         print("  Applying park factors...")
         df = self.calculate_park_adjusted_stats(df)
         
         print("  Calculating pitch quality faced...")
         pitch_quality = self.calculate_pitch_quality_by_batter()
-        df = df.merge(pitch_quality, left_on='MLBAMID', right_on='batter', how='left')
+        df = df.merge(pitch_quality, left_on='MLBAMID', right_on='batter', how='left', suffixes=('', '_pq'))
         
         print("  Calculating pitcher quality faced...")
         pitcher_opp = self.calculate_pitcher_quality_faced()
-        df = df.merge(pitcher_opp, left_on='MLBAMID', right_on='batter', how='left', suffixes=('', '_drop'))
-        df = df.drop(columns=[c for c in df.columns if c.endswith('_drop')])
+        df = df.merge(pitcher_opp, left_on='MLBAMID', right_on='batter', how='left', suffixes=('', '_po'))
+        
+        # Clean up duplicate columns
+        df = df.drop(columns=[c for c in df.columns if c.endswith('_pq') or c.endswith('_po') or c == 'batter_pq' or c == 'batter_po'])
         
         print("  Calculating True Talent projections...")
         df = self.calculate_true_talent(df)
@@ -216,47 +248,45 @@ class LineupProtectionProcessor:
     def calculate_true_talent(self, df: pd.DataFrame) -> pd.DataFrame:
         """Calculate True Talent wOBA by adjusting for context factors."""
         lg_woba = df['wOBA'].mean()
-        lg_protection = df['avg_protection_score'].mean()
+        lg_ondeck = df['avg_ondeck_protection'].mean() if 'avg_ondeck_protection' in df.columns else 0.320
+        lg_preceding = df['avg_preceding_protection'].mean() if 'avg_preceding_protection' in df.columns else 0.320
         lg_fip_minus = 100
         lg_heart_pct = df['heart_pct'].mean() if 'heart_pct' in df.columns else 0.15
         
-        # Protection adjustment: higher protection = boost to observed wOBA
-        # Coefficient: +0.1 protection score difference = ~0.015 wOBA difference
-        protection_coef = 0.15
-        df['protection_adj'] = (df['avg_protection_score'].fillna(lg_protection) - lg_protection) * protection_coef
+        # Protection adjustment: split into on-deck and preceding
+        protection_coef = 0.10  # Coefficient for each direction
+        
+        # On-deck (behind) protection
+        df['ondeck_adj'] = (df['avg_ondeck_protection'].fillna(lg_ondeck) - lg_ondeck) * protection_coef
+        
+        # Preceding (in front) protection  
+        df['preceding_adj'] = (df['avg_preceding_protection'].fillna(lg_preceding) - lg_preceding) * protection_coef
+        
+        # Combined protection adjustment
+        df['protection_adj'] = df['ondeck_adj'] + df['preceding_adj']
         
         # Park adjustment
         df['park_adj'] = df['wOBA'] - df['wOBA_park_adj']
         
         # Pitcher quality adjustment
-        # Facing lower FIP- = tougher pitching = suppresses wOBA
         pitcher_coef = 0.001
         df['pitcher_adj'] = (100 - df['avg_pitcher_fip_minus'].fillna(100)) * pitcher_coef
         
         # Pitch quality adjustment
-        # More heart pitches = easier context
         heart_coef = 0.15
         df['pitch_quality_adj'] = (df['heart_pct'].fillna(lg_heart_pct) - lg_heart_pct) * heart_coef
         
-        # True Talent wOBA: remove favorable context boosts
+        # True Talent wOBA
         df['wOBA_true_talent'] = (df['wOBA'] 
                                    - df['protection_adj'] 
                                    - df['park_adj'] 
-                                   + df['pitcher_adj']  # Add back if faced tough pitching
+                                   + df['pitcher_adj']
                                    - df['pitch_quality_adj'])
         
-        # Regress slightly to mean for stability
+        # Regress slightly to mean
         regression_factor = 0.10
         df['wOBA_true_talent'] = (df['wOBA_true_talent'] * (1 - regression_factor) + 
                                    lg_woba * regression_factor)
-        
-        # Calculate wRC+ style metric
-        weights = self.get_2024_woba_weights()
-        lg_rppa = weights['R_PA']
-        
-        # True Talent wRC+
-        df['wRAA_true_talent'] = ((df['wOBA_true_talent'] - lg_woba) / weights['wOBA_scale'] * df['PA'])
-        df['wRC_plus_true_talent'] = (((df['wRAA_true_talent'] / df['PA'] + lg_rppa) / lg_rppa) * 100)
         
         # Total context adjustment
         df['total_context_adj'] = df['protection_adj'] + df['park_adj'] - df['pitcher_adj'] + df['pitch_quality_adj']
@@ -272,9 +302,3 @@ if __name__ == "__main__":
     
     print("\nTop 10 by True Talent wOBA:")
     print(df.nlargest(10, 'wOBA_true_talent')[['Name', 'Team', 'wOBA', 'wOBA_true_talent', 'total_context_adj']].to_string(index=False))
-    
-    print("\n\nBiggest positive context boost (overrated):")
-    print(df.nlargest(10, 'total_context_adj')[['Name', 'Team', 'wOBA', 'wOBA_true_talent', 'total_context_adj']].to_string(index=False))
-    
-    print("\n\nBiggest negative context (underrated):")
-    print(df.nsmallest(10, 'total_context_adj')[['Name', 'Team', 'wOBA', 'wOBA_true_talent', 'total_context_adj']].to_string(index=False))
