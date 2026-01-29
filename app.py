@@ -7,6 +7,7 @@ controlling for lineup protection and context factors.
 """
 
 import streamlit as st
+import traceback
 import pandas as pd
 import numpy as np
 import plotly.express as px
@@ -47,6 +48,10 @@ try:
 except Exception as e:
     st.error(f"❌ Failed to load data: {e}")
     raise
+
+except Exception as e:
+    st.error("🚨 An error occurred while running the app:")
+    st.code(traceback.format_exc())
 
 # =========================
 # LOCAL DATA CONFIG
