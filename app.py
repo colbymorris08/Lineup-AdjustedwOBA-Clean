@@ -29,10 +29,27 @@ st.set_page_config(
 # =========================
 @st.cache_data(ttl=3600)
 def load_data():
-    """Load all datasets and build full adjusted dataset."""
+    """Load precomputed results (fast, low memory) or fall back to full processing."""
+    import os
+    
+    # Use precomputed results if available (83KB vs 413MB raw statcast)
+    if os.path.exists("precomputed_results.csv"):
+        df = pd.read_csv("precomputed_results.csv")
+        
+        # Create a lightweight processor with just the reference data
+        from data_processor import LineupProtectionProcessor
+        processor = LineupProtectionProcessor(".")
+        processor.batting = pd.read_csv("fangraphs_batting.csv")
+        processor.pitching = pd.read_csv("fangraphs_pitching.csv")
+        processor.park_factors = pd.read_csv("fangraphs_park_factors.csv")
+        processor.woba_constants = pd.read_csv("fangraphs_woba_constants.csv")
+        processor.protection_scores = pd.read_csv("season_protection_summary.csv")
+        
+        return df, processor
+    
+    # Fallback: full processing from raw statcast (requires ~800MB RAM)
     from data_processor import LineupProtectionProcessor
     
-    # Only load first 4 parts (March 28 - June 30, 2024)
     csv_parts = sorted(glob.glob("statcast_2024_part*.csv"))[:4]
     
     if not csv_parts:
